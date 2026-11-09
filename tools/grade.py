@@ -395,3 +395,37 @@ def smooth_flat(x, mask=None, radius=3.0, lo=0.004, hi=0.02):
 def protect_highlights(mask, x, start=0.75, end=0.95):
     """Fade a local-adjustment mask out over bright areas (the sun)."""
     return mask * (1 - smoothstep(start, end, lum(x)))
+
+
+def white_point(x, target=0.95, pct=99.7, max_gain=1.2):
+    """Levels: map the `pct` luminance percentile to `target` (never darkens)."""
+    l = lum(x)
+    p = float(np.percentile(l, pct))
+    # never push more than ~0.4% of pixels (any channel) into clipping
+    mc = float(np.percentile(x.max(-1), 99.6))
+    gain = float(np.clip(min(target / max(p, 1e-3), 0.995 / max(mc, 1e-3)), 1.0, max_gain))
+    if gain <= 1.001:
+        return x
+    return _set_lum(x, np.clip(l * gain, 0, 1.2), l)
+
+
+def sky_gradient(x, mask, stops, strength=0.85):
+    """Re-colour a sky with a designed vertical gradient while keeping its own
+    luminance (like a gradient map in a sky mask). stops: [(y_frac, hue_deg, sat)]."""
+    h, w = x.shape[:2]
+    yy = np.linspace(0, 1, h, dtype=np.float32)
+    ys = [s[0] for s in stops]
+    # interpolate colour in RGB between stop colours
+    cols = np.stack([_hsv2rgb(np.array(hd / 360.0), np.array(s), np.array(1.0)) for _, hd, s in stops])
+    row = np.stack([np.interp(yy, ys, cols[:, c]) for c in range(3)], -1)  # (h,3)
+    row = row / (lum(row[None])[0][:, None] + 1e-5)
+    l = lum(x)
+    tgt = np.clip(row[:, None, :] * l[..., None], 0, 1)
+    return apply_mask(x, tgt, mask * strength)
+
+
+def neutral_blacks(x, below=0.06, amount=0.5):
+    """Pull colour out of the deepest shadows so blacks read as ink, not paint."""
+    l = lum(x)
+    m = (1 - smoothstep(0.0, below, l)) * amount
+    return apply_mask(x, np.repeat(l[..., None], 3, -1), m)
